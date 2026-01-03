@@ -107,9 +107,6 @@ def benchmark(tokenizer, session, runs: int = 100):
 
 
 def main():
-    # Capture baseline memory before loading anything
-    baseline_mem_mb = current_memory_mb()
-
     parser = argparse.ArgumentParser(description="Rank sentences by Asterisk embedding similarity")
     parser.add_argument("--data", default="dist/data.tsv", help="Path to TSV pair file (vendored)")
     parser.add_argument("--model", default="dist/model_int8.onnx", help="Path to INT8 quantized ONNX model (vendored)")
@@ -128,7 +125,7 @@ def main():
     # If benchmarking only, skip ranking output
     if args.benchmark > 0:
         benchmark(tokenizer, session, runs=args.benchmark)
-        mem_mb = current_memory_mb() - baseline_mem_mb
+        mem_mb = current_memory_mb()
         print(f"⏱️  Timings: load={load_ms:.2f} ms (benchmark only), memory≈{mem_mb:.2f} MB")
         return
 
@@ -153,7 +150,7 @@ def main():
     for i, (text, score) in enumerate(top, 1):
         print(f"{i:2d}. ({score:.4f}) {text}")
 
-    mem_mb = current_memory_mb() - baseline_mem_mb
+    mem_mb = current_memory_mb()
     print(f"\n⏱️  Timings: load={load_ms:.2f} ms, embed+rank={rank_ms:.2f} ms (per-embed≈{per_embed_ms:.4f} ms), memory≈{mem_mb:.2f} MB")
 
 
