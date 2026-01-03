@@ -11,8 +11,7 @@ venv/
 data.tsv
 
 # Teacher embeddings (regenerate with `make teacher`)
-teacher/*.npy
-teacher/*.json
+teacher/
 
 # Intermediate models
 model.pt
@@ -21,7 +20,7 @@ model.onnx.data
 model_simplified.onnx
 
 # Keep final INT8 model
-!model_int8.onnx
+!dist/
 
 # IDE
 .vscode/
@@ -39,3 +38,6 @@ Thumbs.db
 # Raw data directories
 newsroom_raw/
 news_datasets/
+
+# Build
+build/

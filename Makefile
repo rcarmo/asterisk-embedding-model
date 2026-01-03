@@ -2,19 +2,28 @@
 #
 # Based on: Semenov, A. (2024). Asterisk*: Keep it Simple. arXiv:2411.05691.
 #
-# Usage: make help
+# Usage: make help (default)
+
+.DEFAULT_GOAL := help
+.ONESHELL:
 
 SHELL := /bin/bash
 PYTHON := uv run python
 PIP := uv pip
 
 # === Paths ===
-DATA_TSV := data.tsv
-TEACHER_DIR := teacher
-MODEL_PT := model.pt
-MODEL_ONNX := model.onnx
-MODEL_SIMPLIFIED := model_simplified.onnx
-MODEL_INT8 := model_int8.onnx
+DATA_DIR := data
+BUILD_DIR := build
+DIST_DIR := dist
+TOKENIZER_DIR := $(DIST_DIR)/tokenizer
+
+DATA_TSV := $(DATA_DIR)/data.tsv
+TEACHER_DIR := $(BUILD_DIR)/teacher
+MODEL_PT := $(BUILD_DIR)/model.pt
+MODEL_ONNX := $(BUILD_DIR)/model.onnx
+MODEL_SIMPLIFIED := $(BUILD_DIR)/model_simplified.onnx
+MODEL_INT8 := $(BUILD_DIR)/model_int8.onnx
+DIST_MODEL_INT8 := $(DIST_DIR)/model_int8.onnx
 
 # === Training Config (override with make VAR=value) ===
 EPOCHS ?= 5
@@ -27,7 +36,7 @@ DISTILL_ALPHA ?= 0.5
 # === Teacher Model (for knowledge distillation) ===
 TEACHER_MODEL ?= sentence-transformers/all-MiniLM-L6-v2
 
-.PHONY: all data teacher train export benchmark demo clean clean-models clean-data install help
+.PHONY: all data teacher train export benchmark demo vendor clean clean-models clean-data install help
 
 # === Main Targets ===
 
@@ -42,30 +51,27 @@ train: $(MODEL_PT) ## Train the Asterisk model with knowledge distillation
 
 export: $(MODEL_INT8) ## Export to ONNX and quantize to INT8
 
-benchmark: $(MODEL_INT8) ## Run inference latency benchmark
+benchmark: vendor ## Run inference latency benchmark
 	@echo "⏱️  Running benchmark..."
-	$(PYTHON) demo.py --benchmark --sample-size 100 --data $(DATA_TSV)
+	$(PYTHON) demo.py --benchmark 1000 --data $(DATA_TSV) --model $(DIST_MODEL_INT8)
 
-demo: $(MODEL_INT8) $(DATA_TSV) ## Run similarity ranking demo with benchmark
+demo: vendor ## Run similarity ranking demo
 	@echo "🔍 Running similarity demo..."
-	$(PYTHON) demo.py --benchmark --data $(DATA_TSV)
+	$(PYTHON) demo.py --sample-size 100 --data $(DATA_TSV) --model $(DIST_MODEL_INT8)
 
 install: ## Install Python dependencies
 	$(PIP) install -r requirements.txt
 
 clean: ## Remove all generated files
 	@echo "🧹 Cleaning generated files..."
-	rm -f $(DATA_TSV)
-	rm -f $(MODEL_PT) $(MODEL_ONNX) $(MODEL_ONNX).data $(MODEL_SIMPLIFIED) $(MODEL_INT8)
-	rm -rf $(TEACHER_DIR)/*.npy $(TEACHER_DIR)/*.json
+	rm -rf $(DATA_DIR) $(BUILD_DIR) $(DIST_DIR)
 	@echo "✅ Clean complete"
 
 clean-models: ## Remove model files only
-	rm -f $(MODEL_PT) $(MODEL_ONNX) $(MODEL_ONNX).data $(MODEL_SIMPLIFIED) $(MODEL_INT8)
+	rm -f $(MODEL_PT) $(MODEL_ONNX) $(MODEL_ONNX).data $(MODEL_SIMPLIFIED) $(MODEL_INT8) $(DIST_MODEL_INT8)
 
 clean-data: ## Remove data files only
-	rm -f $(DATA_TSV)
-	rm -rf $(TEACHER_DIR)/*.npy $(TEACHER_DIR)/*.json
+	rm -rf $(DATA_DIR) $(TEACHER_DIR)
 
 help: ## Show this help
 	@echo "Asterisk Embedding Model Pipeline"
@@ -81,7 +87,8 @@ help: ## Show this help
 
 $(DATA_TSV): prepare_data.py
 	@echo "📥 Preparing Newsroom dataset..."
-	$(PYTHON) prepare_data.py
+	@mkdir -p $(DATA_DIR)
+	$(PYTHON) prepare_data.py --out $(DATA_TSV)
 	@echo "✅ Created $(DATA_TSV)"
 
 # === Teacher Embeddings ===
@@ -98,6 +105,7 @@ $(TEACHER_DIR)/teacher_summaries.npy: $(DATA_TSV) precompute_teacher.py
 # === Training ===
 
 $(MODEL_PT): $(DATA_TSV) $(TEACHER_DIR)/teacher_summaries.npy train.py model.py
+	@mkdir -p $(BUILD_DIR)
 	@echo "🏋️  Training Asterisk model with knowledge distillation..."
 	$(PYTHON) train.py \
 		--data $(DATA_TSV) \
@@ -114,6 +122,7 @@ $(MODEL_PT): $(DATA_TSV) $(TEACHER_DIR)/teacher_summaries.npy train.py model.py
 # === Export & Quantize ===
 
 $(MODEL_ONNX): $(MODEL_PT) quantize.py
+	@mkdir -p $(BUILD_DIR)
 	@echo "📦 Exporting to ONNX..."
 	$(PYTHON) -c "from quantize import export_to_onnx; export_to_onnx('$(MODEL_PT)', '$(MODEL_ONNX)')"
 
@@ -125,3 +134,26 @@ $(MODEL_INT8): $(MODEL_SIMPLIFIED)
 	@echo "🗜️  Quantizing to INT8..."
 	$(PYTHON) -c "from quantize import quantize_onnx; quantize_onnx('$(MODEL_SIMPLIFIED)', '$(MODEL_INT8)')"
 	@echo "✅ Quantized model saved to $(MODEL_INT8)"
+
+# === Vendor (bundle for distribution) ===
+vendor: $(MODEL_INT8) ## Bundle artifacts into dist/ (INT8 model + tokenizer)
+	@mkdir -p $(DIST_DIR)
+	@if [ ! -f "$(DIST_MODEL_INT8)" ]; then \
+		echo "📦 Copying INT8 model to $(DIST_MODEL_INT8)"; \
+		cp $(MODEL_INT8) $(DIST_MODEL_INT8); \
+	else \
+		echo "ℹ️  INT8 model already present at $(DIST_MODEL_INT8), skipping copy"; \
+	fi
+	@if [ ! -f "$(TOKENIZER_DIR)/vocab.json" ]; then \
+		echo "🔤 Vendoring tokenizer to $(TOKENIZER_DIR)"; \
+		$(PYTHON) - <<-'PY'
+	from transformers import GPT2Tokenizer
+	import os
+	os.makedirs("$(TOKENIZER_DIR)", exist_ok=True)
+	tok = GPT2Tokenizer.from_pretrained("gpt2")
+	tok.save_pretrained("$(TOKENIZER_DIR)")
+	print("✅ Tokenizer saved to $(TOKENIZER_DIR)")
+	PY
+	else \
+		echo "ℹ️  Tokenizer already present at $(TOKENIZER_DIR), skipping"; \
+	fi

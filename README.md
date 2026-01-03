@@ -1,8 +1,24 @@
 # Asterisk Embedding Model
 
-A compact, efficient text embedding model based on the Transformer encoder architecture.
+A compact, efficient 256-dimensional text embedding model based on the Transformer encoder architecture.
 
 **Paper:** Semenov, A. (2024). *Asterisk\*: Keep it Simple*. [arXiv:2411.05691](https://arxiv.org/abs/2411.05691)
+
+## Why
+
+I wanted a sentence embedding model with:
+- A smaller dimensional output (but still effective in figuring out similarity across tens of thousands of segments)
+- Low resource requirements to run on edge devices (only takes up ~30MB disk, can run on CPU)
+- Fast enough speed for real-time applications
+- Low memory footprint during inference (*this one is still a work in progress*, since we're clocking in at >700MB RAM with ONNX Runtime + GPT-2 tokenizer)
+
+The key application I had in mind was semantic search over low thousands of news summaries on a CPU, with latency under 50ms per query, as [my RSS feed summarizer](https://github.com/rcarmo/feed-summarizer) was hitting a brick wall Simhash and FTS5-based approaches and I didn't want to rely on an external embedding service.
+
+Also, I needed something I could use for other purposes, like clustering or deduplication of personal notes and blog posts, again either on low-resource hardware or at blazing speed on a regular laptop CPU.
+
+Then there was the intellectual curiosity aspect--most of the literature focuses on larger models with high accuracy, but I also wanted to explore the other end of the spectrum: how simple can we go while still getting decent results? 
+
+And then I came across [Semenov's *Asterisk\** paper](https://arxiv.org/abs/2411.05691), which provided a great starting point.
 
 ## Overview
 
@@ -18,6 +34,13 @@ Asterisk is a lightweight sentence embedding model designed for:
 | Attention heads | 2 |
 | Output dimension | 256 |
 | Tokenizer | GPT-2 BPE |
+| Training data | NEWSROOM dataset (1.3M article-summary pairs) |
+
+### About the NEWSROOM dataset
+
+The model in `dist` was trained on the NEWSROOM summarization dataset (Grusky et al., 2018): ~1.3M article–summary pairs collected from 38 major news publishers.
+
+In this project I decided to use a Hugging Face mirror (`LogeshChandran/newsroom`), cleaning text and pairing each summary with the first paragraph of its source article. The prepared 350MB TSV lives in `data/data.tsv` after `make data`.
 
 ## Quick Start
 
@@ -25,16 +48,17 @@ Asterisk is a lightweight sentence embedding model designed for:
 # Install dependencies
 make install
 
-# Run full pipeline (data → teacher → train → export)
+# Run full pipeline (data → teacher → train → export → vendor)
 make all
 
 # Or step by step:
-make data      # Prepare Newsroom dataset
-make teacher   # Precompute teacher embeddings
-make train     # Train with knowledge distillation
-make export    # Export to ONNX + quantize to INT8
+make data      # Prepare Newsroom dataset → data/data.tsv
+make teacher   # Precompute teacher embeddings → build/teacher/
+make train     # Train with knowledge distillation → build/model.pt
+make export    # Export to ONNX + quantize to INT8 → build/model_int8.onnx
+make vendor    # Bundle dist/: model_int8.onnx + tokenizer/
 
-# Test the model
+# Test the model (uses dist/model_int8.onnx)
 make benchmark # Run latency benchmark
 make demo      # Similarity ranking demo
 ```
@@ -45,20 +69,24 @@ make demo      # Similarity ranking demo
 ┌─────────────────────────────────────────────────────────────────────┐
 │  1. DATA PREPARATION                                                │
 │     prepare_data.py                                                 │
-│     └── data.tsv (summary, article pairs)                           │
+│     └── data/data.tsv (summary, article pairs)                      │
 ├─────────────────────────────────────────────────────────────────────┤
 │  2. TEACHER EMBEDDINGS (optional but recommended)                   │
 │     precompute_teacher.py                                           │
-│     └── teacher/teacher_summaries.npy, teacher_articles.npy         │
+│     └── build/teacher/teacher_summaries.npy, teacher_articles.npy   │
 ├─────────────────────────────────────────────────────────────────────┤
 │  3. TRAINING                                                        │
 │     train.py                                                        │
-│     └── model.pt                                                    │
+│     └── build/model.pt                                              │
 │     Loss = (1-α)·InfoNCE + α·Distillation                           │
 ├─────────────────────────────────────────────────────────────────────┤
 │  4. EXPORT & QUANTIZE                                               │
 │     quantize.py                                                     │
-│     └── model.onnx → model_simplified.onnx → model_int8.onnx        │
+│     └── build/model.onnx → build/model_simplified.onnx → build/model_int8.onnx │
+├─────────────────────────────────────────────────────────────────────┤
+│  5. VENDOR                                                          │
+│     make vendor                                                     │
+│     └── dist/model_int8.onnx, dist/tokenizer/                       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -67,7 +95,7 @@ make demo      # Similarity ranking demo
 Override defaults via environment or make arguments:
 
 ```bash
-make train EPOCHS=20 BATCH_SIZE=64 LR=1e-4 DISTILL_ALPHA=0.7
+make train EPOCHS=5 BATCH_SIZE=32 LR=1e-4 DISTILL_ALPHA=0.7
 ```
 
 | Variable | Default | Description |
@@ -89,17 +117,17 @@ import torch
 from model import AsteriskEmbeddingModel
 from transformers import GPT2Tokenizer
 
-tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+tokenizer = GPT2Tokenizer.from_pretrained("dist/tokenizer")  # after make vendor
 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
 model = AsteriskEmbeddingModel(vocab_size=len(tokenizer))
-model.load_state_dict(torch.load("model.pt"))
+model.load_state_dict(torch.load("build/model.pt", map_location="cpu"))
 model.eval()
 
 text = "This is a sample sentence."
 inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
 with torch.no_grad():
-    embedding = model(inputs["input_ids"])  # [1, 256]
+  embedding = model(inputs["input_ids"])  # [1, 256]
 ```
 
 ### ONNX Runtime (Production)
@@ -108,10 +136,10 @@ with torch.no_grad():
 import onnxruntime as ort
 from transformers import GPT2Tokenizer
 
-tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+tokenizer = GPT2Tokenizer.from_pretrained("dist/tokenizer")  # after make vendor
 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
-session = ort.InferenceSession("model_int8.onnx", providers=["CPUExecutionProvider"])
+session = ort.InferenceSession("dist/model_int8.onnx", providers=["CPUExecutionProvider"])
 
 text = "This is a sample sentence."
 tokens = tokenizer(text, return_tensors="np", padding="max_length", truncation=True, max_length=128)
@@ -129,6 +157,9 @@ embedding = session.run(None, {"input_ids": tokens["input_ids"]})[0]  # [1, 256]
 | `quantize.py` | Export to ONNX and quantize |
 | `inference.py` | PyTorch inference example |
 | `demo.py` | Similarity search demo + benchmark |
+| `data/` | Working data directory (data.tsv) |
+| `build/` | Working models + teacher embeddings |
+| `dist/` | Distributed artifacts (model_int8.onnx, tokenizer/) |
 
 ## Memory Efficiency
 
@@ -137,6 +168,8 @@ The training pipeline is designed for large datasets:
 - **Line-offset indexing**: TSV files are not loaded into memory; only byte offsets are stored
 - **Memory-mapped teacher embeddings**: `.npy` files are accessed via `np.memmap`
 - **Streaming data preparation**: Newsroom dataset is processed in streaming mode
+
+The actual memory efficiency in production will depend on the peculiarities of your ONNX runtime and tokenizer implementation.
 
 ## License
 

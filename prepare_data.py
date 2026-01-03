@@ -1,11 +1,14 @@
 import csv
 import html
 import re
+import argparse
+from pathlib import Path
 from typing import Optional
+from tqdm import tqdm
 
 from datasets import load_dataset
 
-OUT_PATH = "newsroom_all_pairs.tsv"
+OUT_PATH = "data/newsroom_all_pairs.tsv"
 
 def _insert_case_boundaries(text: str) -> str:
     """Insert space at camelCase and letter/digit boundaries."""
@@ -297,13 +300,18 @@ def load_all_pairs():
             yield (summary, article)
 
 def save_pairs(path):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f, delimiter="\t")
-        for s, a in load_all_pairs():
+        for s, a in tqdm(load_all_pairs(), desc="Writing pairs", unit="pair"):
             writer.writerow([s, a])
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Prepare NEWSROOM contrastive pairs")
+    parser.add_argument("--out", type=str, default=OUT_PATH, help="Output TSV path")
+    args = parser.parse_args()
+
     print("Writing all NEWSROOM pairs to TSV...")
-    save_pairs(OUT_PATH)
-    print(f"Done. Output saved to {OUT_PATH}")
+    save_pairs(args.out)
+    print(f"Done. Output saved to {args.out}")
 

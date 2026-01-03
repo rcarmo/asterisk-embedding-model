@@ -1,6 +1,6 @@
 import torch
 from transformers import GPT2Tokenizer
-from train_asterisk import AsteriskEmbeddingModel
+from model import AsteriskEmbeddingModel
 import torch.onnx
 import onnx
 from onnxsim import simplify
