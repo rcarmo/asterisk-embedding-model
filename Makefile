@@ -1,0 +1,127 @@
+# Makefile for Asterisk Embedding Model Pipeline
+#
+# Based on: Semenov, A. (2024). Asterisk*: Keep it Simple. arXiv:2411.05691.
+#
+# Usage: make help
+
+SHELL := /bin/bash
+PYTHON := uv run python
+PIP := uv pip
+
+# === Paths ===
+DATA_TSV := data.tsv
+TEACHER_DIR := teacher
+MODEL_PT := model.pt
+MODEL_ONNX := model.onnx
+MODEL_SIMPLIFIED := model_simplified.onnx
+MODEL_INT8 := model_int8.onnx
+
+# === Training Config (override with make VAR=value) ===
+EPOCHS ?= 5
+BATCH_SIZE ?= 32
+LR ?= 2e-4
+PATIENCE ?= 3
+VAL_SPLIT ?= 0.1
+DISTILL_ALPHA ?= 0.5
+
+# === Teacher Model (for knowledge distillation) ===
+TEACHER_MODEL ?= sentence-transformers/all-MiniLM-L6-v2
+
+.PHONY: all data teacher train export benchmark demo clean clean-models clean-data install help
+
+# === Main Targets ===
+
+all: $(MODEL_INT8) ## Run full pipeline (data → teacher → train → export)
+	@echo "✅ Full pipeline complete!"
+
+data: $(DATA_TSV) ## Prepare training data from Newsroom dataset
+
+teacher: $(TEACHER_DIR)/teacher_summaries.npy ## Precompute teacher embeddings for distillation
+
+train: $(MODEL_PT) ## Train the Asterisk model with knowledge distillation
+
+export: $(MODEL_INT8) ## Export to ONNX and quantize to INT8
+
+benchmark: $(MODEL_INT8) ## Run inference latency benchmark
+	@echo "⏱️  Running benchmark..."
+	$(PYTHON) demo.py --benchmark --sample-size 100 --data $(DATA_TSV)
+
+demo: $(MODEL_INT8) $(DATA_TSV) ## Run similarity ranking demo with benchmark
+	@echo "🔍 Running similarity demo..."
+	$(PYTHON) demo.py --benchmark --data $(DATA_TSV)
+
+install: ## Install Python dependencies
+	$(PIP) install -r requirements.txt
+
+clean: ## Remove all generated files
+	@echo "🧹 Cleaning generated files..."
+	rm -f $(DATA_TSV)
+	rm -f $(MODEL_PT) $(MODEL_ONNX) $(MODEL_ONNX).data $(MODEL_SIMPLIFIED) $(MODEL_INT8)
+	rm -rf $(TEACHER_DIR)/*.npy $(TEACHER_DIR)/*.json
+	@echo "✅ Clean complete"
+
+clean-models: ## Remove model files only
+	rm -f $(MODEL_PT) $(MODEL_ONNX) $(MODEL_ONNX).data $(MODEL_SIMPLIFIED) $(MODEL_INT8)
+
+clean-data: ## Remove data files only
+	rm -f $(DATA_TSV)
+	rm -rf $(TEACHER_DIR)/*.npy $(TEACHER_DIR)/*.json
+
+help: ## Show this help
+	@echo "Asterisk Embedding Model Pipeline"
+	@echo ""
+	@echo "Targets:"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "Config (override with make VAR=value):"
+	@echo "  EPOCHS=$(EPOCHS)  BATCH_SIZE=$(BATCH_SIZE)  LR=$(LR)  DISTILL_ALPHA=$(DISTILL_ALPHA)"
+
+# === Data Preparation ===
+
+$(DATA_TSV): prepare_data.py
+	@echo "📥 Preparing Newsroom dataset..."
+	$(PYTHON) prepare_data.py
+	@echo "✅ Created $(DATA_TSV)"
+
+# === Teacher Embeddings ===
+
+$(TEACHER_DIR)/teacher_summaries.npy: $(DATA_TSV) precompute_teacher.py
+	@mkdir -p $(TEACHER_DIR)
+	@echo "🎓 Precomputing teacher embeddings..."
+	$(PYTHON) precompute_teacher.py \
+		--tsv $(DATA_TSV) \
+		--out_dir $(TEACHER_DIR) \
+		--teacher_model $(TEACHER_MODEL)
+	@echo "✅ Teacher embeddings saved to $(TEACHER_DIR)/"
+
+# === Training ===
+
+$(MODEL_PT): $(DATA_TSV) $(TEACHER_DIR)/teacher_summaries.npy train.py model.py
+	@echo "🏋️  Training Asterisk model with knowledge distillation..."
+	$(PYTHON) train.py \
+		--data $(DATA_TSV) \
+		--teacher-dir $(TEACHER_DIR) \
+		--output $(MODEL_PT) \
+		--epochs $(EPOCHS) \
+		--batch-size $(BATCH_SIZE) \
+		--lr $(LR) \
+		--patience $(PATIENCE) \
+		--val-split $(VAL_SPLIT) \
+		--distill-alpha $(DISTILL_ALPHA)
+	@echo "✅ Model saved to $(MODEL_PT)"
+
+# === Export & Quantize ===
+
+$(MODEL_ONNX): $(MODEL_PT) quantize.py
+	@echo "📦 Exporting to ONNX..."
+	$(PYTHON) -c "from quantize import export_to_onnx; export_to_onnx('$(MODEL_PT)', '$(MODEL_ONNX)')"
+
+$(MODEL_SIMPLIFIED): $(MODEL_ONNX)
+	@echo "🔧 Simplifying ONNX model..."
+	$(PYTHON) -c "from quantize import simplify_onnx; simplify_onnx('$(MODEL_ONNX)', '$(MODEL_SIMPLIFIED)')"
+
+$(MODEL_INT8): $(MODEL_SIMPLIFIED)
+	@echo "🗜️  Quantizing to INT8..."
+	$(PYTHON) -c "from quantize import quantize_onnx; quantize_onnx('$(MODEL_SIMPLIFIED)', '$(MODEL_INT8)')"
+	@echo "✅ Quantized model saved to $(MODEL_INT8)"

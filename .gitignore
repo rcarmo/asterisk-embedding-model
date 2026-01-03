@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+.env
+
+# Data (large files - regenerate with `make data`)
+data.tsv
+
+# Teacher embeddings (regenerate with `make teacher`)
+teacher/*.npy
+teacher/*.json
+
+# Intermediate models
+model.pt
+model.onnx
+model.onnx.data
+model_simplified.onnx
+
+# Keep final INT8 model
+!model_int8.onnx
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Raw data directories
+newsroom_raw/
+news_datasets/
