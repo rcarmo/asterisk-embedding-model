@@ -18,8 +18,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.cuda.amp import GradScaler
 from torch.utils.data import Dataset, DataLoader, random_split
-from torch.cuda.amp import GradScaler, autocast
 from transformers import GPT2Tokenizer
 from tqdm import tqdm
 
@@ -189,7 +189,7 @@ def distillation_loss(student_emb, teacher_emb):
 
 
 # --- Combined Loss ---
-def combined_loss(emb1, emb2, teacher_emb1, teacher_emb2, alpha=0.5, temperature=0.05):
+def combined_loss(emb1, emb2, teacher_emb1, teacher_emb2, alpha=0.5, temperature=0.05, teacher_proj=None):
     """Combined contrastive + distillation loss.
     
     Args:
@@ -208,6 +208,9 @@ def combined_loss(emb1, emb2, teacher_emb1, teacher_emb2, alpha=0.5, temperature
     # Note: dimensions may differ, so we compute cosine similarity loss instead of MSE
     emb1_norm = F.normalize(emb1, dim=1)
     emb2_norm = F.normalize(emb2, dim=1)
+    if teacher_proj is not None:
+        teacher_emb1 = teacher_proj(teacher_emb1)
+        teacher_emb2 = teacher_proj(teacher_emb2)
     teacher_emb1_norm = F.normalize(teacher_emb1, dim=1)
     teacher_emb2_norm = F.normalize(teacher_emb2, dim=1)
     
@@ -221,11 +224,18 @@ def combined_loss(emb1, emb2, teacher_emb1, teacher_emb2, alpha=0.5, temperature
 
 
 # --- Training Loop ---
+def _unwrap_dataset(ds):
+    while hasattr(ds, "dataset") and isinstance(ds, torch.utils.data.Subset):
+        ds = ds.dataset
+    return ds
+
+
 def train(model, train_loader, val_loader, optimizer, scheduler, device, 
-          epochs=5, patience=3, use_amp=True, distill_alpha=0.5, use_distillation=True):
+          epochs=5, patience=3, use_amp=True, distill_alpha=0.5, use_distillation=True, teacher_proj=None):
     """Training loop with validation, early stopping, and mixed precision."""
     model.to(device)
-    scaler = GradScaler(enabled=use_amp)
+    device_type = "cuda" if torch.cuda.is_available() else "cpu"
+    scaler = GradScaler(enabled=(use_amp and device_type == "cuda"))
     best_val_loss = float('inf')
     patience_counter = 0
     best_state = None
@@ -248,12 +258,12 @@ def train(model, train_loader, val_loader, optimizer, scheduler, device,
             
             optimizer.zero_grad()
             
-            with autocast(enabled=use_amp):
+            with torch.amp.autocast(device_type=device_type, enabled=use_amp):
                 emb1 = model(input1)
                 emb2 = model(input2)
                 
                 if use_distillation:
-                    loss, l_c, l_d = combined_loss(emb1, emb2, teacher1, teacher2, alpha=distill_alpha)
+                    loss, l_c, l_d = combined_loss(emb1, emb2, teacher1, teacher2, alpha=distill_alpha, teacher_proj=teacher_proj)
                     total_contrast += l_c.item()
                     total_distill += l_d.item()
                 else:
@@ -261,7 +271,8 @@ def train(model, train_loader, val_loader, optimizer, scheduler, device,
             
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            params_to_clip = list(model.parameters()) + (list(teacher_proj.parameters()) if teacher_proj is not None else [])
+            torch.nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
             
@@ -284,11 +295,11 @@ def train(model, train_loader, val_loader, optimizer, scheduler, device,
                     input1, input2 = batch
                     input1, input2 = input1.to(device), input2.to(device)
                 
-                with autocast(enabled=use_amp):
+                with torch.amp.autocast(device_type=device_type, enabled=use_amp):
                     emb1 = model(input1)
                     emb2 = model(input2)
                     if use_distillation:
-                        loss, _, _ = combined_loss(emb1, emb2, teacher1, teacher2, alpha=distill_alpha)
+                        loss, _, _ = combined_loss(emb1, emb2, teacher1, teacher2, alpha=distill_alpha, teacher_proj=teacher_proj)
                     else:
                         loss = contrastive_loss(emb1, emb2)
                 val_loss += loss.item()
@@ -364,6 +375,16 @@ def main():
     train_size = len(full_dataset) - val_size
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
     
+    # Teacher projection (align teacher dim to student dim if needed)
+    teacher_proj = None
+    if use_distillation:
+        base_ds = _unwrap_dataset(train_dataset)
+        teacher_dim = base_ds.teacher_s.shape[1]
+        student_dim = model.proj.out_features
+        if teacher_dim != student_dim:
+            print(f"Projecting teacher embeddings {teacher_dim} -> {student_dim}")
+            teacher_proj = nn.Linear(teacher_dim, student_dim, bias=False).to(device)
+
     num_workers = 4 if device == "cuda" else 0
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, 
                               num_workers=num_workers, pin_memory=True)
@@ -372,13 +393,15 @@ def main():
     print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}")
 
     # Optimizer & Scheduler
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+    optim_params = list(model.parameters()) + (list(teacher_proj.parameters()) if teacher_proj is not None else [])
+    optimizer = torch.optim.AdamW(optim_params, lr=args.lr, weight_decay=0.01)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     # Train
     model = train(model, train_loader, val_loader, optimizer, scheduler, device, 
                   epochs=args.epochs, patience=args.patience, use_amp=use_amp,
-                  distill_alpha=args.distill_alpha, use_distillation=use_distillation)
+                  distill_alpha=args.distill_alpha, use_distillation=use_distillation,
+                  teacher_proj=teacher_proj)
 
     # Save model
     torch.save(model.state_dict(), args.output)
