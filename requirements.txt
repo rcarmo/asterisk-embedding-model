@@ -15,5 +15,8 @@ onnx>=1.14.0
 onnxsim>=0.4.33
 onnxruntime>=1.15.0
 
+# GGUF export (from llama.cpp)
+git+https://github.com/ggerganov/llama.cpp#subdirectory=gguf-py
+
 # Evaluation
 scikit-learn>=1.3.0

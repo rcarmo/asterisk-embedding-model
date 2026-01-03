@@ -16,6 +16,8 @@ DATA_DIR := data
 BUILD_DIR := build
 DIST_DIR := dist
 TOKENIZER_DIR := $(DIST_DIR)/tokenizer
+GGUF_QUANT ?= q8_0
+GGUF_MODEL := $(DIST_DIR)/model_$(GGUF_QUANT).gguf
 
 DATA_TSV := $(DATA_DIR)/data.tsv
 TEACHER_DIR := $(BUILD_DIR)/teacher
@@ -36,7 +38,7 @@ DISTILL_ALPHA ?= 0.5
 # === Teacher Model (for knowledge distillation) ===
 TEACHER_MODEL ?= sentence-transformers/all-MiniLM-L6-v2
 
-.PHONY: all data teacher train export benchmark demo vendor clean clean-models clean-data install help
+.PHONY: all benchmark demo demo-gguf benchmark-gguf vendor gguf clean clean-models clean-data install help
 
 # === Main Targets ===
 
@@ -59,6 +61,20 @@ demo: vendor ## Run similarity ranking demo
 	@echo "🔍 Running similarity demo..."
 	$(PYTHON) demo.py --sample-size 100 --data $(DATA_TSV) --model $(DIST_MODEL_INT8)
 
+gguf: vendor $(MODEL_PT) ## Convert to GGUF (configurable quantization; default q8_0)
+	@mkdir -p $(DIST_DIR)
+	@echo "🪶 Converting to GGUF (quant=$(GGUF_QUANT))..."
+	$(PYTHON) convert_to_gguf.py --pt $(MODEL_PT) --out $(GGUF_MODEL) --quant $(GGUF_QUANT)
+	@echo "✅ GGUF written to $(GGUF_MODEL)"
+
+demo-gguf: gguf ## Run similarity ranking demo with GGUF model
+	@echo "🔍 Running GGUF similarity demo..."
+	$(PYTHON) demo_gguf.py --sample-size 100 --data $(DATA_TSV) --model $(GGUF_MODEL)
+
+benchmark-gguf: gguf ## Run inference latency benchmark with GGUF model
+	@echo "⏱️  Running GGUF benchmark..."
+	$(PYTHON) demo_gguf.py --benchmark 1000 --model $(GGUF_MODEL)
+
 install: ## Install Python dependencies
 	$(PIP) install -r requirements.txt
 
@@ -72,6 +88,17 @@ clean-models: ## Remove model files only
 
 clean-data: ## Remove data files only
 	rm -rf $(DATA_DIR) $(TEACHER_DIR)
+
+# === Tokenizer (shared prerequisite) ===
+
+$(TOKENIZER_DIR)/vocab.json:
+	@mkdir -p $(TOKENIZER_DIR)
+	$(PYTHON) - <<'PY'
+	from transformers import GPT2Tokenizer
+	tok = GPT2Tokenizer.from_pretrained("gpt2")
+	tok.save_pretrained("$(TOKENIZER_DIR)")
+	print("✅ Tokenizer saved to $(TOKENIZER_DIR)")
+	PY
 
 help: ## Show this help
 	@echo "Asterisk Embedding Model Pipeline"
@@ -136,24 +163,11 @@ $(MODEL_INT8): $(MODEL_SIMPLIFIED)
 	@echo "✅ Quantized model saved to $(MODEL_INT8)"
 
 # === Vendor (bundle for distribution) ===
-vendor: $(MODEL_INT8) ## Bundle artifacts into dist/ (INT8 model + tokenizer)
+vendor: $(MODEL_INT8) $(TOKENIZER_DIR)/vocab.json ## Bundle artifacts into dist/ (INT8 model + tokenizer)
 	@mkdir -p $(DIST_DIR)
 	@if [ ! -f "$(DIST_MODEL_INT8)" ]; then \
 		echo "📦 Copying INT8 model to $(DIST_MODEL_INT8)"; \
 		cp $(MODEL_INT8) $(DIST_MODEL_INT8); \
 	else \
 		echo "ℹ️  INT8 model already present at $(DIST_MODEL_INT8), skipping copy"; \
-	fi
-	@if [ ! -f "$(TOKENIZER_DIR)/vocab.json" ]; then \
-		echo "🔤 Vendoring tokenizer to $(TOKENIZER_DIR)"; \
-		$(PYTHON) - <<-'PY'
-	from transformers import GPT2Tokenizer
-	import os
-	os.makedirs("$(TOKENIZER_DIR)", exist_ok=True)
-	tok = GPT2Tokenizer.from_pretrained("gpt2")
-	tok.save_pretrained("$(TOKENIZER_DIR)")
-	print("✅ Tokenizer saved to $(TOKENIZER_DIR)")
-	PY
-	else \
-		echo "ℹ️  Tokenizer already present at $(TOKENIZER_DIR), skipping"; \
 	fi
