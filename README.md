@@ -1,24 +1,27 @@
 # Asterisk Embedding Model
 
-A compact, efficient 256-dimensional text embedding model based on the Transformer encoder architecture.
+![Asterisk Logo](docs/asterisk-256.png)
+
+A compact, efficient 256-dimensional text embedding model based on a Transformer encoder.
 
 **Paper:** Semenov, A. (2024). *Asterisk\*: Keep it Simple*. [arXiv:2411.05691](https://arxiv.org/abs/2411.05691)
 
 ## Why
 
 I wanted a sentence embedding model with:
-- A smaller dimensional output (but still effective in figuring out similarity across tens of thousands of segments)
-- Low resource requirements to run on edge devices (only takes up ~30MB disk, can run on CPU)
-- Fast enough speed for real-time applications
-- Low memory footprint during inference (*this one is still a work in progress*, since we're clocking in at >700MB RAM with ONNX Runtime + GPT-2 tokenizer)
+- A smaller-dimensional output that still preserves semantic similarity across tens of thousands of segments
+- Low resource requirements for edge devices (~30MB on disk; CPU-friendly)
+- Fast enough for real-time applications
+- A low memory footprint during inference (*still a work in progress*; ONNX Runtime + GPT-2 tokenizer currently uses >700MB RAM)
+- Relatively fast training even on modest consumer-grade hardware (around 2-3h on a 12GB RTX3060 for the NEWSROOM dataset)
 
 The key application I had in mind was semantic search over low thousands of news summaries on a CPU, with latency under 50ms per query, as [my RSS feed summarizer](https://github.com/rcarmo/feed-summarizer) was hitting a brick wall Simhash and FTS5-based approaches and I didn't want to rely on an external embedding service.
 
-Also, I needed something I could use for other purposes, like clustering or deduplication of personal notes and blog posts, again either on low-resource hardware or at blazing speed on a regular laptop CPU.
+I also need it for clustering or deduplication of personal notes and blog posts, again on low-resource hardware or at high speed on a laptop CPU.
 
-Then there was the intellectual curiosity aspect--most of the literature focuses on larger models with high accuracy, but I also wanted to explore the other end of the spectrum: how simple can we go while still getting decent results? 
+Finally, out of curiosity: most literature focuses on larger, higher-accuracy models; I wanted to explore the other end of the spectrum—how simple can we go while staying useful?
 
-And then I came across [Semenov's *Asterisk\** paper](https://arxiv.org/abs/2411.05691), which provided a great starting point.
+Semenov's [*Asterisk\** paper](https://arxiv.org/abs/2411.05691) provided a solid starting point. This is by no means optimized or state-of-the-art, but I think it strikes a decent balance between size, speed, and performance for a few practical use cases.
 
 ## Overview
 
@@ -38,7 +41,7 @@ Asterisk is a lightweight sentence embedding model designed for:
 
 ### About the NEWSROOM dataset
 
-The model in `dist` was trained on the NEWSROOM summarization dataset (Grusky et al., 2018): ~1.3M article–summary pairs collected from 38 major news publishers.
+The model in `dist` was trained on the NEWSROOM summarization dataset (Grusky et al., 2018): ~1.3M article–summary pairs from 38 major news publishers.
 
 In this project I decided to use a Hugging Face mirror (`LogeshChandran/newsroom`), cleaning text and pairing each summary with the first paragraph of its source article. The prepared 350MB TSV lives in `data/data.tsv` after `make data`.
 
@@ -66,28 +69,24 @@ make demo      # Similarity ranking demo
 ## Pipeline
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  1. DATA PREPARATION                                                │
-│     prepare_data.py                                                 │
-│     └── data/data.tsv (summary, article pairs)                      │
-├─────────────────────────────────────────────────────────────────────┤
-│  2. TEACHER EMBEDDINGS (optional but recommended)                   │
-│     precompute_teacher.py                                           │
-│     └── build/teacher/teacher_summaries.npy, teacher_articles.npy   │
-├─────────────────────────────────────────────────────────────────────┤
-│  3. TRAINING                                                        │
-│     train.py                                                        │
-│     └── build/model.pt                                              │
-│     Loss = (1-α)·InfoNCE + α·Distillation                           │
-├─────────────────────────────────────────────────────────────────────┤
-│  4. EXPORT & QUANTIZE                                               │
-│     quantize.py                                                     │
-│     └── build/model.onnx → build/model_simplified.onnx → build/model_int8.onnx │
-├─────────────────────────────────────────────────────────────────────┤
-│  5. VENDOR                                                          │
-│     make vendor                                                     │
-│     └── dist/model_int8.onnx, dist/tokenizer/                       │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ 1) DATA PREPARATION                                           │
+│    prepare_data.py → data/data.tsv (summary, article pairs)   │
+├──────────────────────────────────────────────────────────────┤
+│ 2) TEACHER EMBEDDINGS (optional)                              │
+│    precompute_teacher.py → build/teacher/*.npy, *.json        │
+├──────────────────────────────────────────────────────────────┤
+│ 3) TRAINING                                                   │
+│    train.py → build/model.pt                                  │
+│    Loss = (1-α)·InfoNCE + α·Distillation                      │
+├──────────────────────────────────────────────────────────────┤
+│ 4) EXPORT & QUANTIZE                                          │
+│    quantize.py → build/model.onnx → model_simplified.onnx →   │
+│                 build/model_int8.onnx                         │
+├──────────────────────────────────────────────────────────────┤
+│ 5) VENDOR                                                     │
+│    make vendor → dist/model_int8.onnx, dist/tokenizer/        │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## Configuration
