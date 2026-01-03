@@ -70,22 +70,22 @@ make demo      # Similarity ranking demo
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ 1) DATA PREPARATION                                           │
-│    prepare_data.py → data/data.tsv (summary, article pairs)   │
+│ 1) DATA PREPARATION                                          │
+│    prepare_data.py → data/data.tsv (summary, article pairs)  │
 ├──────────────────────────────────────────────────────────────┤
-│ 2) TEACHER EMBEDDINGS (optional)                              │
-│    precompute_teacher.py → build/teacher/*.npy, *.json        │
+│ 2) TEACHER EMBEDDINGS (optional)                             │
+│    precompute_teacher.py → build/teacher/*.npy, *.json       │
 ├──────────────────────────────────────────────────────────────┤
-│ 3) TRAINING                                                   │
-│    train.py → build/model.pt                                  │
-│    Loss = (1-α)·InfoNCE + α·Distillation                      │
+│ 3) TRAINING                                                  │
+│    train.py → build/model.pt                                 │
+│    Loss = (1-α)·InfoNCE + α·Distillation                     │
 ├──────────────────────────────────────────────────────────────┤
-│ 4) EXPORT & QUANTIZE                                          │
-│    quantize.py → build/model.onnx → model_simplified.onnx →   │
-│                 build/model_int8.onnx                         │
+│ 4) EXPORT & QUANTIZE                                         │
+│    quantize.py → build/model.onnx → model_simplified.onnx →  │
+│                 build/model_int8.onnx                        │
 ├──────────────────────────────────────────────────────────────┤
-│ 5) VENDOR                                                     │
-│    make vendor → dist/model_int8.onnx, dist/tokenizer/        │
+│ 5) VENDOR                                                    │
+│    make vendor → dist/model_int8.onnx, dist/tokenizer/       │
 └──────────────────────────────────────────────────────────────┘
 ```
 
