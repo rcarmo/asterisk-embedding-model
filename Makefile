@@ -24,6 +24,8 @@ MODEL_ONNX := $(BUILD_DIR)/model.onnx
 MODEL_SIMPLIFIED := $(BUILD_DIR)/model_simplified.onnx
 MODEL_INT8 := $(BUILD_DIR)/model_int8.onnx
 DIST_MODEL_INT8 := $(DIST_DIR)/model_int8.onnx
+GGUF_QUANT ?= q8_0
+GGUF_MODEL := $(DIST_DIR)/model_$(GGUF_QUANT).gguf
 
 # === Training Config (override with make VAR=value) ===
 EPOCHS ?= 5
@@ -36,7 +38,7 @@ DISTILL_ALPHA ?= 0.5
 # === Teacher Model (for knowledge distillation) ===
 TEACHER_MODEL ?= sentence-transformers/all-MiniLM-L6-v2
 
-.PHONY: all data teacher train export benchmark demo vendor clean clean-models clean-data install help
+.PHONY: all data teacher train export gguf benchmark demo demo-gguf benchmark-gguf vendor clean clean-models clean-data install help
 
 # === Main Targets ===
 
@@ -58,6 +60,24 @@ benchmark: vendor ## Run inference latency benchmark
 demo: vendor ## Run similarity ranking demo
 	@echo "🔍 Running similarity demo..."
 	$(PYTHON) demo.py --sample-size 100 --data $(DATA_TSV) --model $(DIST_MODEL_INT8)
+
+# === GGUF Conversion & Demo ===
+
+$(GGUF_MODEL): $(MODEL_PT) convert_to_gguf.py
+	@mkdir -p $(DIST_DIR)
+	@echo "🪶 Converting to GGUF (quant=$(GGUF_QUANT))..."
+	$(PYTHON) convert_to_gguf.py --pt $(MODEL_PT) --out $(GGUF_MODEL) --quant $(GGUF_QUANT)
+	@echo "✅ GGUF written to $(GGUF_MODEL)"
+
+gguf: $(GGUF_MODEL) ## Convert PyTorch weights to GGUF (configurable quant)
+
+demo-gguf: vendor gguf ## Run GGUF similarity ranking demo
+	@echo "🔍 Running GGUF similarity demo..."
+	$(PYTHON) demo_gguf.py --model $(GGUF_MODEL) --tokenizer $(TOKENIZER_DIR) --data $(DATA_TSV) --sample-size 100 --top-k 5
+
+benchmark-gguf: vendor gguf ## Run GGUF latency benchmark
+	@echo "⏱️  Running GGUF benchmark..."
+	$(PYTHON) demo_gguf.py --model $(GGUF_MODEL) --tokenizer $(TOKENIZER_DIR) --data $(DATA_TSV) --benchmark 500
 
 install: ## Install Python dependencies
 	$(PIP) install -r requirements.txt
