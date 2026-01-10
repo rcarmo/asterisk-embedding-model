@@ -15,7 +15,7 @@ I wanted a sentence embedding model with:
 - A low memory footprint during inference (*still a work in progress*; ONNX Runtime + GPT-2 tokenizer currently uses >700MB RAM)
 - Relatively fast training even on modest consumer-grade hardware (around 2-3h on a 12GB RTX3060 for the NEWSROOM dataset)
 
-The key application I had in mind was semantic search over low thousands of news summaries on a CPU, with latency under 50ms per query, as [my RSS feed summarizer](https://github.com/rcarmo/feed-summarizer) was hitting a brick wall Simhash and FTS5-based approaches and I didn't want to rely on an external embedding service.
+The key application I had in mind was semantic search over low thousands of news summaries on a CPU, with latency under 50ms per query, as [my RSS feed summarizer](https://github.com/rcarmo/feed-summarizer) was hitting a brick wall with Simhash and FTS5-based approaches and I didn't want to rely on an external embedding service.
 
 I also need it for clustering or deduplication of personal notes and blog posts, again on low-resource hardware or at high speed on a laptop CPU.
 
